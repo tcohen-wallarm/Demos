@@ -1,0 +1,79 @@
+#!/bin/bash
+usage ()
+{
+    echo -e "\033[48:5:166:0mUsage: \033[0m"
+    echo "$0 [ build ]      - Start demo app and Wallarm node"
+    echo "$0 [ run ]        - Run gotestwaf"
+    echo "$0 [ delete ]     - Delete demo app and Wallarm node"
+
+    exit 0
+
+}
+
+exit_on_error() {
+    exit_code=$1
+    last_command=${@:2}
+    if [ $exit_code -ne 0 ]; then
+        >&2 echo "\"${last_command}\" command failed with exit code ${exit_code}."
+        exit $exit_code
+    fi
+}
+
+if [ -z $1 ]; then
+    usage
+fi
+
+if [ $1 = "build" ]; then
+
+    if [ -z $WC_DEPLOY_USER ] || [ -z $WC_DEPLOY_USER ]; then 
+    echo -e '\033[48;5;166m => Error \033[0m'
+    echo "WC_DEPLOY_USER or WC_DEPLOY_PASSWORD not set. eg:"
+    echo "export WC_DEPLOY_USER=user@domain.com"
+    echo "export WC_DEPLOY_PASSWORD=u1INoHqhlyDCPVY"
+    exit 1
+    fi
+
+
+    #!/bin/env bash
+    echo -e '\033[48;5;166m => Starting demo web app\033[0m'
+    #docker run -p8080:80 --rm --name nginx nginx
+    (set -x; docker run -d --rm --name app nginx)
+
+    exit_on_error $?
+    read -n 1 -s -r -p "<Press any key to continue>"
+    printf "\n"
+
+    #!/bin/env bash
+    echo -e '\033[48;5;166m => Starting Wallarm node\033[0m'
+
+    # replace app ip in nginx config
+    IP=$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' app)
+
+    if [ -z $IP ]; then
+
+        echo "Test app not running"
+        exit 1;
+    fi
+
+    sed -ri 's/(\b[0-9]{1,3}\.){3}[0-9]{1,3}\b'/$IP/ default.conf
+
+
+    (set -x; docker run -d --rm --name wallarm -v $PWD/default.conf:/etc/nginx/sites-enabled/default -e DEPLOY_USER=$WC_DEPLOY_USER -e DEPLOY_PASSWORD=$WC_DEPLOY_PASSWORD -e NGINX_BACKEND='localhost' -e WALLARM_API_HOST='us1.api.wallarm.com' -e TARANTOOL_MEMORY_GB=16 -p 80:80 wallarm/node:3.2.0-1) 
+
+    # exit_on_error $?
+    # read -n 1 -s -r -p "<Press any key to continue>"
+    # printf "\n"
+
+elif [ $1 == "run" ]; then
+    echo -e '\033[48;5;166m => http://locahost under attack by gotestwaf\033[0m'
+    (set -x; docker pull wallarm/gotestwaf)
+    (set -x; docker run --network="host" -v ${PWD}/reports:/go/src/gotestwaf/reports  wallarm/gotestwaf --url=http://localhost --verbose)
+
+elif [ $1 == "delete" ]; then
+    echo -e '\033[48;5;166m => Deleting\033[0m'
+    docker stop app
+    docker stop wallarm
+else 
+    usage
+
+fi

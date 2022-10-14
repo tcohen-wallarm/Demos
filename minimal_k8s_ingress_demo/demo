@@ -1,0 +1,89 @@
+#!/bin/bash
+
+usage ()
+{
+    echo -e "\033[48:5:166:0mUsage: \033[0m"
+    echo "$0 [ build ]  - Deploy Wallarm node, demo app ingress and set Wallarm filtration mode"
+    echo "$0 [ run ]    - Run sqli and xss attacks on demo the app ingress"
+    echo "$0 [ delete ] - Delete demo"
+
+    exit 0
+
+}
+
+
+
+INGRESS_CONTROLLER_NAME=wallarm
+YOUR_CLOUD_NODE_TOKEN=$WALLARM_CLOUD_NODE_TOKEN
+KUBERNETES_NAMESPACE=default
+
+if [ -z $WALLARM_CLOUD_NODE_TOKEN ]; then 
+   echo -e '\033[48;5;166m => Error \033[0m'
+   echo "WALLARM_CLOUD_NODE_TOKEN not set. eg:"
+   echo "export WALLARM_CLOUD_NODE_TOKEN=rxhUh5i3MxLHxQTb7yDhBpaD7CD+7c5vOhuWZCc8Z6PpXTXPu1INoHqhlyDCPVY"
+   exit 1
+fi
+
+if [ -z $1 ]; then
+    usage
+fi
+
+if [ $1 = "build" ]; then
+	echo -e '\033[48;5;166m => Installing Wallarm \033[0m'
+        (set -x; git clone https://github.com/wallarm/ingress-chart --branch stable/3.4 --single-branch)
+
+        echo "+ helm install --set controller.wallarm.enabled=true,controller.wallarm.token=xxxXx0x0XxXXx/QTb7yDhBpaD7CD+7c5vOhuWZCc8Z6PpXTXPu1INoHqhlyDCPVY,controller.wallarm.apiHost=us1.api.wallarm.com wallarm ingress-chart/wallarm-ingress -n default"
+
+	helm install --set controller.wallarm.enabled=true,controller.wallarm.token=$YOUR_CLOUD_NODE_TOKEN,controller.wallarm.apiHost=us1.api.wallarm.com  $INGRESS_CONTROLLER_NAME ingress-chart/wallarm-ingress -n $KUBERNETES_NAMESPACE
+
+    	read -n 1 -s -r -p "<Press any key to continue>"
+    	printf "\n"
+
+        watch kubectl get pods -l release=wallarm
+
+	echo -e '\033[48;5;166m => Installing cafe-ingress \033[0m'
+
+	(set -x; kubectl apply -f cafe-ingress)
+
+        read -n 1 -s -r -p "<Press any key to continue>"
+        printf "\n"
+
+	echo -e '\033[48;5;166m => Enabling traffic analysis on cafe-ingress \033[0m'
+
+	YOUR_INGRESS_NAME=cafe-ingress
+	INSTANCE=100
+	(set -x; kubectl annotate ingress $YOUR_INGRESS_NAME nginx.ingress.kubernetes.io/wallarm-mode=monitoring)
+	(set -x; kubectl annotate ingress $YOUR_INGRESS_NAME nginx.ingress.kubernetes.io/wallarm-instance=$INSTANCE)
+
+elif [ $1 = "run" ]; then
+
+	PORT=$(kubectl get svc wallarm-nginx-ingress-controller -o jsonpath='{.spec.ports[1].nodePort}')
+	IP=$(kubectl get nodes -o wide -ojsonpath={.items[1].status.addresses[0].address})
+	# XSS SQLi
+	echo -e '\033[48;5;166m => Running XSS & SQLi payload \033[0m'
+	(set -x; curl -v -k --resolve cafe.example.com:$PORT:$IP https://cafe.example.com:$PORT/coffee/?id='or+1=1--a-<script>prompt(1)</script>')
+	# PATH TRAVERSAL
+	echo -e '\033[48;5;166m => Running Path Traversal payload \033[0m'
+	(set -x; curl -v -k --resolve cafe.example.com:$PORT:$IP https://cafe.example.com:$PORT/coffee/ -H 'wallarm1: /etc/passwd')
+	# SQLi
+	echo -e '\033[48;5;166m => Running SQLi payload \033[0m'
+        (set -x; curl -v -k --resolve cafe.example.com:$PORT:$IP https://cafe.example.com:$PORT/coffee/login?token='IyEvYmluL3NoCg&user=1+AND+SLEEP(10)--+wlrm') 
+	# RCE
+	echo -e '\033[48;5;166m => Running RCE payload \033[0m'
+        (set -x; curl -v -k --resolve cafe.example.com:$PORT:$IP https://cafe.example.com:$PORT/coffee/?3087e0940d='e3tfc2VsZi5lbnYucmVnaXN0ZXJVbmRlZmluZWRGaWx0ZXJDYWxsYmFjaygiZXhlYyIpfX17e19zZWxmLmVudi5nZXRGaWx0ZXIoImlkIil9fQ')
+	# NoSQLi
+	echo -e '\033[48;5;166m => Running NoSQLi payload \033[0m'
+	(set -x; curl -v -k --resolve cafe.example.com:$PORT:$IP https://cafe.example.com:$PORT/coffee/coffee/?1cfd50b34f='dHJ1ZSwgJHdoZXJlOiAnOTkgPT0gODgn')
+	#CRLF
+	#/coffee/?ae59e38a3f=%0ARCPT+TO%3A+test%40evil.com%0A
+	#XXE POST
+	#PCFET0NUWVBFIGZvbyBbPCFFTEVNRU5UIGZvbyBBTlkgPjwhRU5USVRZIHh4ZSBTWVNURU0gImV4cGVjdDovL2lkIj5dPg
+	
+elif [ $1 = "delete" ]; then
+	echo -e '\033[48;5;166m => Deleting cafe-ingress\033[0m'
+	(set -x; kubectl delete -f cafe-ingress)
+	echo -e '\033[48;5;166m => Uninstalling Wallarm\033[0m'
+	(set -x; helm uninstall wallarm)
+else
+    usage
+fi
